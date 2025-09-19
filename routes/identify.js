@@ -6,14 +6,15 @@ const {
   createSecondaryContact,
   updateToSecondary
 } = require("../services/contactService");
+const { validateIdentifyInput } = require("../utils/validation");
 
 router.post("/", async (req, res) => {
   try {
-    const { email, phoneNumber } = req.body;
-
-    if (!email && !phoneNumber) {
-      return res.status(400).json({ error: "Email or phoneNumber required" });
+    const validation = validateIdentifyInput(req.body);
+    if (!validation.valid) {
+      return res.status(400).json({ error: validation.error });
     }
+    const { email, phoneNumber } = req.body;
 
     let cluster = await getCluster(email, phoneNumber);
 
