@@ -1,47 +1,11 @@
 const express = require("express");
 const router = express.Router();
-const { PrismaClient } = require("@prisma/client");
-const prisma = new PrismaClient();
-
-//Recursively fetch all contacts connected (directly/indirectly)
-async function getCluster(email, phoneNumber) {
-  let seenIds = new Set();
-  let cluster = [];
-
-  let toVisit = await prisma.contact.findMany({
-    where: {
-      OR: [
-        email ? { email } : {},
-        phoneNumber ? { phoneNumber } : {}
-      ]
-    }
-  });
-
-  while (toVisit.length > 0) {
-    const current = toVisit.pop();
-    if (seenIds.has(current.id)) continue;
-
-    seenIds.add(current.id);
-    cluster.push(current);
-
-    const related = await prisma.contact.findMany({
-      where: {
-        OR: [
-          current.linkedId ? { id: current.linkedId } : {},
-          { linkedId: current.id }
-        ]
-      }
-    });
-
-    for (const rel of related) {
-      if (!seenIds.has(rel.id)) {
-        toVisit.push(rel);
-      }
-    }
-  }
-
-  return cluster;
-}
+const {
+  getCluster,
+  createPrimaryContact,
+  createSecondaryContact,
+  updateToSecondary
+} = require("../services/contactService");
 
 router.post("/", async (req, res) => {
   try {
@@ -55,13 +19,7 @@ router.post("/", async (req, res) => {
 
     let primaryContact;
     if (cluster.length === 0) {
-      primaryContact = await prisma.contact.create({
-        data: {
-          email,
-          phoneNumber,
-          linkPrecedence: "primary"
-        }
-      });
+      primaryContact = await createPrimaryContact(email, phoneNumber);
       cluster = [primaryContact];
     } else {
       const primaries = cluster.filter(c => c.linkPrecedence === "primary");
@@ -73,13 +31,7 @@ router.post("/", async (req, res) => {
 
       for (const contact of cluster) {
         if (contact.id !== primaryContact.id) {
-          await prisma.contact.update({
-            where: { id: contact.id },
-            data: {
-              linkPrecedence: "secondary",
-              linkedId: primaryContact.id
-            }
-          });
+          await updateToSecondary(contact.id, primaryContact.id);
         }
       }
 
@@ -87,14 +39,7 @@ router.post("/", async (req, res) => {
       const allPhones = cluster.map(c => c.phoneNumber).filter(Boolean);
 
       if ((email && !allEmails.includes(email)) || (phoneNumber && !allPhones.includes(phoneNumber))) {
-        const newContact = await prisma.contact.create({
-          data: {
-            email,
-            phoneNumber,
-            linkPrecedence: "secondary",
-            linkedId: primaryContact.id
-          }
-        });
+        const newContact = await createSecondaryContact(email, phoneNumber, primaryContact.id);
         cluster.push(newContact);
       }
     }
@@ -104,16 +49,15 @@ router.post("/", async (req, res) => {
     const uniqueEmails = [...new Set(updatedCluster.map(c => c.email).filter(Boolean))];
     const uniquePhoneNumbers = [...new Set(updatedCluster.map(c => c.phoneNumber).filter(Boolean))];
     const secondaryContactIds = updatedCluster.filter(c => c.id !== primaryContact.id).map(c => c.id);
-    const response = {
+
+    res.json({
       contact: {
         primaryContactId: primaryContact.id,
         emails: uniqueEmails,
         phoneNumbers: uniquePhoneNumbers,
         secondaryContactIds
       }
-    };
-    res.json(response);
-
+    });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "Internal Server Error" });
